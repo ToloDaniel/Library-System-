@@ -476,4 +476,139 @@
     document.getElementById("statFine").textContent = fine;
   }
 
-  document.getElementById("searchBtn").addEventListener("click", 
+  document.getElementById("searchBtn").addEventListener("click", async () => {
+    const q = document.getElementById("searchInput").value.trim();
+    if (!q) { loadBooks(); return; }
+    const filter = `or=(book_number.ilike.*${encodeURIComponent(q)}*,subject.ilike.*${encodeURIComponent(q)}*)`;
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/book_status?select=*&${filter}&order=book_number.asc`, { headers: authHeaders() });
+    if (await handleAuthFailure(res)) return;
+    const data = await res.json();
+    if (!res.ok) { toast("Search failed.", "error"); return; }
+    renderBooks(data);
+  });
+
+  document.getElementById("clearSearchBtn").addEventListener("click", () => {
+    document.getElementById("searchInput").value = "";
+    loadBooks();
+  });
+
+  document.getElementById("addBtn").addEventListener("click", async () => {
+    const book_number = document.getElementById("addBookNo").value.trim();
+    const grade = document.getElementById("addGrade").value.trim();
+    const subject = document.getElementById("addSubject").value.trim();
+
+    if (!book_number || !grade || !subject) {
+      toast("Fill in book number, grade, and subject.", "error");
+      return;
+    }
+
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/books`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json", "Prefer": "return=minimal" }),
+      body: JSON.stringify({ school_id: schoolId, book_number, grade: parseFloat(grade), subject, availability: "Yes" })
+    });
+    if (await handleAuthFailure(res)) return;
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast("Add failed: " + (err.message || "check for duplicate book number"), "error");
+      return;
+    }
+
+    document.getElementById("addBookNo").value = "";
+    document.getElementById("addGrade").value = "";
+    document.getElementById("addSubject").value = "";
+    toast("Book added.", "success");
+    loadBooks();
+  });
+
+  document.getElementById("borrowBtn").addEventListener("click", async () => {
+    const book_no = document.getElementById("borrowBookNo").value.trim();
+    const student_name = document.getElementById("borrowStudent").value.trim();
+    const adm_no = document.getElementById("borrowAdm").value.trim();
+
+    if (!book_no || !student_name || !adm_no) {
+      toast("Fill in book number, student name, and admission number.", "error");
+      return;
+    }
+
+    const findRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/books?school_id=eq.${schoolId}&book_number=eq.${encodeURIComponent(book_no)}&select=availability`,
+      { headers: authHeaders() }
+    );
+    if (await handleAuthFailure(findRes)) return;
+    const findData = await findRes.json();
+
+    if (!findRes.ok || !findData.length) { toast("Book not found.", "error"); return; }
+    if (findData[0].availability !== "Yes") { toast("Book is already borrowed.", "error"); return; }
+
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/borrowed_books`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json", "Prefer": "return=minimal" }),
+      body: JSON.stringify({ school_id: schoolId, student_name, adm_no, book_no })
+    });
+    if (!insertRes.ok) { toast("Borrow failed.", "error"); return; }
+
+    await fetch(`${SUPABASE_URL}/rest/v1/books?school_id=eq.${schoolId}&book_number=eq.${encodeURIComponent(book_no)}`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json", "Prefer": "return=minimal" }),
+      body: JSON.stringify({ availability: "No" })
+    });
+
+    document.getElementById("borrowBookNo").value = "";
+    document.getElementById("borrowStudent").value = "";
+    document.getElementById("borrowAdm").value = "";
+    toast("Book issued successfully.", "success");
+    loadBooks();
+  });
+
+  async function returnBook(book_no) {
+    const findRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/borrowed_books?school_id=eq.${schoolId}&book_no=eq.${encodeURIComponent(book_no)}&select=created_date`,
+      { headers: authHeaders() }
+    );
+    if (await handleAuthFailure(findRes)) return;
+    const findData = await findRes.json();
+    if (!findRes.ok || !findData.length) { toast("This book is not currently issued.", "error"); return; }
+
+    const daysHeld = Math.floor((Date.now() - new Date(findData[0].created_date)) / (1000 * 60 * 60 * 24));
+
+    await fetch(`${SUPABASE_URL}/rest/v1/borrowed_books?school_id=eq.${schoolId}&book_no=eq.${encodeURIComponent(book_no)}`, {
+      method: "DELETE", headers: authHeaders()
+    });
+    await fetch(`${SUPABASE_URL}/rest/v1/books?school_id=eq.${schoolId}&book_number=eq.${encodeURIComponent(book_no)}`, {
+      method: "PATCH",
+      headers: authHeaders({ "Content-Type": "application/json", "Prefer": "return=minimal" }),
+      body: JSON.stringify({ availability: "Yes" })
+    });
+
+    if (daysHeld > 5) {
+      const fine = (daysHeld - 5) * 10;
+      toast(`Returned. Fine due: KSh ${fine} (${daysHeld - 5} days late).`, "error");
+    } else {
+      toast("Returned on time — no fine.", "success");
+    }
+    loadBooks();
+  }
+
+  async function removeBook(book_no) {
+    if (!confirm(`Remove book ${book_no}? This cannot be undone.`)) return;
+
+    await fetch(`${SUPABASE_URL}/rest/v1/borrowed_books?school_id=eq.${schoolId}&book_no=eq.${encodeURIComponent(book_no)}`, {
+      method: "DELETE", headers: authHeaders()
+    });
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/books?school_id=eq.${schoolId}&book_number=eq.${encodeURIComponent(book_no)}`, {
+      method: "DELETE", headers: authHeaders()
+    });
+
+    if (!res.ok) { toast("Remove failed.", "error"); return; }
+    toast("Book removed.", "success");
+    loadBooks();
+  }
+
+  init();
+</script>
+
+</body>
+</html>
+
